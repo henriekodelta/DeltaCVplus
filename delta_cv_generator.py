@@ -15,6 +15,7 @@ from zipfile import ZipFile
 from PIL import Image
 import io
 import os
+import re
 
 PROFILE_PHOTO_MEDIA_PATH = "word/media/image1.png"
 PHOTO_TARGET_PX = 900
@@ -83,60 +84,137 @@ def expand_bullets(doc: Document, placeholder: str, bullets: list):
     insert_after = target
     for b in bullets:
         np = insert_paragraph_after(doc, insert_after, style)
-        set_paragraph_text(np, f"• {b}")
+        set_paragraph_text(np, f"{chr(8226)} {b}")
         insert_after = np
 
     delete_paragraph(target)
 
 
+def normalize_competence_line(role: dict) -> str:
+    """
+    Return a canonical competence line in the format:
+    skill1 | skill2 | skill3
+    """
+    raw = role.get("competence_line")
+    if raw is None:
+        raw = role.get("competencies", [])
+
+    if isinstance(raw, (list, tuple)):
+        parts = [str(x).strip() for x in raw if str(x).strip()]
+        return " | ".join(parts)
+
+    text = str(raw).strip()
+    if not text:
+        return ""
+
+    if ":" in text and text.lower().startswith("kompetanse"):
+        text = text.split(":", 1)[1].strip()
+
+    parts = [p.strip() for p in re.split(r"\||,|;", text) if p.strip()]
+    return " | ".join(parts)
+
+
 # -----------------------------
 # EXPERIENCE
 # -----------------------------
-def render_experience(doc: Document, roles: list):
-    proto_h = proto_c = proto_b = None
+def render_highlighted_experience(doc: Document, highlighted_roles: list):
+    proto_h = proto_c = proto_b = proto_k = None
 
     for i, p in enumerate(doc.paragraphs):
         if "{{ROLE_TITLE}}" in p.text:
             proto_h = p
             proto_c = doc.paragraphs[i + 1]
             proto_b = doc.paragraphs[i + 2]
+            proto_k = doc.paragraphs[i + 3]
             break
 
     if not proto_h:
-        raise ValueError("Experience prototype not found in template.")
+        raise ValueError("Highlighted experience prototype not found in template.")
 
     header_style = proto_h.style
     body_style = proto_c.style
-    insert_after = proto_b
+    insert_after = proto_k
 
-    for idx, role in enumerate(roles):
+    for idx, role in enumerate(highlighted_roles or []):
         ph = insert_paragraph_after(doc, insert_after, header_style)
         set_paragraph_text(
             ph,
-            f"{role['title']} – {role['company']} ({role['period']})",
-            bold=True
+            f"{role['title']} - {role['company']} ({role['period']})",
+            bold=True,
         )
 
         pc = insert_paragraph_after(doc, ph, body_style)
         set_paragraph_text(
             pc,
-            f"{role['client_context']}. {role['role_summary']}"
+            f"{role['client_context']}. {role['role_summary']}",
         )
 
         last = pc
         for b in role.get("bullets", []):
             pb = insert_paragraph_after(doc, last, body_style)
-            set_paragraph_text(pb, f"• {b}")
+            set_paragraph_text(pb, f"{chr(8226)} {b}")
             last = pb
 
-        if idx != len(roles) - 1:
+        pk = insert_paragraph_after(doc, last, body_style)
+        set_paragraph_text(pk, normalize_competence_line(role))
+        last = pk
+
+        if idx != len(highlighted_roles) - 1:
             spacer = insert_paragraph_after(doc, last, body_style)
             set_paragraph_text(spacer, "")
             last = spacer
 
         insert_after = last
 
+    delete_paragraph(proto_k)
     delete_paragraph(proto_b)
+    delete_paragraph(proto_c)
+    delete_paragraph(proto_h)
+
+
+def render_other_experience(doc: Document, other_roles: list):
+    proto_h = proto_c = proto_k = None
+
+    for i, p in enumerate(doc.paragraphs):
+        if "{{SHORT_ROLE_TITLE}}" in p.text:
+            proto_h = p
+            proto_c = doc.paragraphs[i + 1]
+            proto_k = doc.paragraphs[i + 2]
+            break
+
+    if not proto_h:
+        raise ValueError("Other experience prototype not found in template.")
+
+    header_style = proto_h.style
+    body_style = proto_c.style
+    insert_after = proto_k
+
+    for idx, role in enumerate(other_roles or []):
+        ph = insert_paragraph_after(doc, insert_after, header_style)
+        set_paragraph_text(
+            ph,
+            f"{role['title']} - {role['company']} ({role['period']})",
+            bold=True,
+        )
+
+        pc = insert_paragraph_after(doc, ph, body_style)
+        set_paragraph_text(
+            pc,
+            f"{role['client_context']}. {role['role_summary']}",
+        )
+
+        pk = insert_paragraph_after(doc, pc, body_style)
+        set_paragraph_text(pk, normalize_competence_line(role))
+        last = pk
+
+        if idx != len(other_roles) - 1:
+            spacer = insert_paragraph_after(doc, last, body_style)
+            set_paragraph_text(spacer, "")
+            last = spacer
+
+        insert_after = last
+
+    delete_paragraph(proto_k)
     delete_paragraph(proto_c)
     delete_paragraph(proto_h)
 
@@ -206,7 +284,16 @@ def replace_placeholders_everywhere(doc: Document, mapping: dict):
 # -----------------------------
 # MAIN GENERATOR
 # -----------------------------
-def generate_cv(template_path, candidate_photo_path, mapping, key_bullets, jd_bullets, roles, output_path):
+def generate_cv(
+    template_path,
+    candidate_photo_path,
+    mapping,
+    key_bullets,
+    jd_bullets,
+    highlighted_roles,
+    other_roles,
+    output_path,
+):
 
     doc = Document(template_path)
 
@@ -214,7 +301,8 @@ def generate_cv(template_path, candidate_photo_path, mapping, key_bullets, jd_bu
 
     expand_bullets(doc, "{{KEY_ACHIEVEMENT_BULLETS}}", key_bullets or [])
     expand_bullets(doc, "{{JD_MATCH_BULLETS}}", jd_bullets or [])
-    render_experience(doc, roles or [])
+    render_highlighted_experience(doc, highlighted_roles or [])
+    render_other_experience(doc, other_roles or [])
 
     tmp = output_path.replace(".docx", "_tmp.docx")
     doc.save(tmp)
